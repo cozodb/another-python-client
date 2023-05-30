@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cozo_client"
+authors = [
+    { name = "Ziyang Hu", email = "hu.ziyang@cantab.net" },
+]
+description = "Another Python client for CozoDB, battery included"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["client"]
+license = { text = "MIT" }
+classifiers = [
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "cozo-embedded",
+    "requests",
+    "pydantic",
+]
+version = "0.1.0"
