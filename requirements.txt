@@ -1,3 +1,4 @@
 requests
 cozo_embedded
 pydantic
+openpyxl

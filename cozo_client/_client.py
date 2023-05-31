@@ -241,6 +241,28 @@ class CozoResponse(BaseModel):
 
         return self.flatmap(generic_unbatch)
 
+    def save_as_spreadsheet(self, filename: str):
+        from openpyxl import Workbook
+        from openpyxl.styles import Font
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(self.headers)
+        for row in self.rows:
+            nr = []
+            for v in row:
+                if isinstance(v, str) or isinstance(v, int) or isinstance(v, float):
+                    nr.append(v)
+                else:
+                    nr.append(json.dumps(v, ensure_ascii=False))
+            ws.append(nr)
+
+        bold_font = Font(bold=True)
+        for cell in ws["1:1"]:
+            cell.font = bold_font
+
+        wb.save(filename)
+
 
 class CozoRow(BaseModel):
     headers: list[str]
