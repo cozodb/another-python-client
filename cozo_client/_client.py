@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import re
 from enum import Enum
 import logging
 import html
@@ -489,8 +490,17 @@ class CozoClient:
             raise QueryException(e.args[0])
         return CozoResponse(**res)
 
-    def run(self, script: str | InputProgram, params: dict[str, Any] | None = None, immutable=False) -> CozoResponse:
+    def run(self,
+            script: str | InputProgram,
+            params: dict[str, Any] | None = None,
+            replace: dict[str, str] | None = None,
+            immutable=False
+            ) -> CozoResponse:
         script = str(script)
+        if replace:
+            for k, v in replace.items():
+                r = r'\$\$' + k + r'\$\$'
+                script = re.sub(r, v, script)
         if self.is_remote:
             return self._client_request(script, params, immutable)
         else:
