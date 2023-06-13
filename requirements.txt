@@ -1,4 +1,4 @@
-requests
+httpx
 cozo_embedded
 pydantic
 openpyxl

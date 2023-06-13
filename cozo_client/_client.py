@@ -7,7 +7,7 @@ import html
 import json
 from typing import Any, Generator, Union, Callable
 
-import requests
+import httpx
 import cozo_embedded
 from pydantic import BaseModel
 
@@ -265,6 +265,26 @@ class CozoResponse(BaseModel):
         wb.save(filename)
 
 
+def _get_ident(d):
+    match d:
+        case str(d):
+            return d
+        case tuple(d):
+            return d[0]
+        case _:
+            raise ValueError(f'Invalid column definition: {d}')
+
+
+def _get_type(d):
+    match d:
+        case str(_):
+            return 'Any?'
+        case tuple(d):
+            return d[1]
+        case _:
+            raise ValueError(f'Invalid column definition: {d}')
+
+
 class CozoRow(BaseModel):
     headers: list[str]
     row: list[Any]
@@ -342,11 +362,14 @@ class CozoClient:
             self.embedded = None
             self._remote_sse = {}
             self._remote_cb_id = 0
-            self._session = requests.Session()
+            self._session = httpx.Client()
+            self._asession = httpx.AsyncClient()
             if remote_token:
                 self._session.headers.update({'Authorization': f'Bearer {remote_token}'})
+                self._asession.headers.update({'Authorization': f'Bearer {remote_token}'})
             elif remote_auth:
                 self._session.headers.update({'x-cozo-auth': remote_auth})
+                self._asession.headers.update({'x-cozo-auth': remote_auth})
         else:
             self.embedded = cozo_embedded.CozoDbPy(engine, path or '', '{}')
 
@@ -363,45 +386,64 @@ class CozoClient:
             else:
                 raise
 
+    async def a_ensure_index(self, name: str, idx_name: str, cols: list[str]):
+        try:
+            existing_cols = await self.a_run(f'::columns {name}:{idx_name}')
+            for i, row in enumerate(existing_cols):
+                assert row['column'] == cols[i], f'Column {i} is {row["column"]} not {cols[i]}'
+
+        except QueryException as e:
+            if e.code == 'query::relation_not_found':
+                prog = f'''::index create {name}:{idx_name} {{ {', '.join(cols)} }}'''
+                await self.a_run(prog)
+            else:
+                raise
+
     def ensure_relation(self,
                         name: str,
                         keys: list[str | tuple[str, str] | tuple[str, str, str]],
                         vals: list[str | tuple[str, str] | tuple[str, str, str]]):
-        def get_ident(d):
-            match d:
-                case str(d):
-                    return d
-                case tuple(d):
-                    return d[0]
-                case _:
-                    raise ValueError(f'Invalid column definition: {d}')
-
-        def get_type(d):
-            match d:
-                case str(_):
-                    return 'Any?'
-                case tuple(d):
-                    return d[1]
-                case _:
-                    raise ValueError(f'Invalid column definition: {d}')
-
         try:
             existing_cols = self.run(f'::columns {name}')
             assert len([row for row in existing_cols if row['is_key']]) == len(keys)
             assert len([row for row in existing_cols if not row['is_key']]) == len(vals)
             for i, col in enumerate(keys):
-                assert get_ident(col) == existing_cols[i]['column']
-                assert get_type(col) == existing_cols[i]['type']
+                assert _get_ident(col) == existing_cols[i]['column']
+                assert _get_type(col) == existing_cols[i]['type']
             col_map = {row['column']: row for row in existing_cols if not row['is_key']}
             for col in vals:
-                assert get_ident(col) in col_map, f'Column {col} not found'
-                assert get_type(col).replace(' ', '') == col_map[get_ident(col)]['type'].replace(' ', ''), \
-                    f'Column {col} has type {col_map[get_ident(col)]["type"]} not {get_type(col)}'
+                assert _get_ident(col) in col_map, f'Column {col} not found'
+                assert _get_type(col).replace(' ', '') == col_map[_get_ident(col)]['type'].replace(' ', ''), \
+                    f'Column {col} has type {col_map[_get_ident(col)]["type"]} not {_get_type(col)}'
         except QueryException as e:
             if e.code == 'query::relation_not_found':
                 prog = InputProgram(
                     store_relation=(StoreOp.CREATE, InputRelation(name=name, keys=keys, values=vals)))
                 self.run(prog)
+            else:
+                raise
+
+    async def a_ensure_relation(self,
+                                name: str,
+                                keys: list[str | tuple[str, str] | tuple[str, str, str]],
+                                vals: list[str | tuple[str, str] | tuple[str, str, str]]):
+        try:
+            existing_cols = await self.a_run(f'::columns {name}')
+            assert len([row for row in existing_cols if row['is_key']]) == len(keys)
+            assert len([row for row in existing_cols if not row['is_key']]) == len(vals)
+            for i, col in enumerate(keys):
+                assert _get_ident(col) == existing_cols[i]['column']
+                assert _get_type(col) == existing_cols[i]['type']
+            col_map = {row['column']: row for row in existing_cols if not row['is_key']}
+            for col in vals:
+                assert _get_ident(col) in col_map, f'Column {col} not found'
+                assert _get_type(col).replace(' ', '') == col_map[_get_ident(col)]['type'].replace(' ', ''), \
+                    f'Column {col} has type {col_map[_get_ident(col)]["type"]} not {_get_type(col)}'
+        except QueryException as e:
+            if e.code == 'query::relation_not_found':
+                prog = InputProgram(
+                    store_relation=(StoreOp.CREATE, InputRelation(name=name, keys=keys, values=vals)))
+                await self.a_run(prog)
             else:
                 raise
 
@@ -429,12 +471,52 @@ class CozoClient:
             else:
                 raise
 
+    async def a_ensure_lsh(self,
+                           rel_name: str,
+                           idx_name: str,
+                           extractor: str,
+                           filter: str | None,
+                           n_perm: int = 200,
+                           n_gram: int = 7,
+                           target_threshold: float = 0.5):
+        try:
+            await self.a_run(f'''::columns {rel_name}:{idx_name}''')
+        except QueryException as e:
+            if e.code == 'query::relation_not_found':
+                query = f'''::lsh create {rel_name}:{idx_name} {{
+                    extractor: {extractor},
+                    {'filter: ' + filter + ',' if filter else ''}
+                    tokenizer: NGram,
+                    n_perm: {n_perm},
+                    target_threshold: {target_threshold},
+                    n_gram: {n_gram},
+                }}'''
+                await self.a_run(query)
+            else:
+                raise
+
     def ensure_vec_index(self, rel_name: str, idx_name: str, dim: int, m: int, ef: int):
         try:
             self.run(f'::columns {rel_name}:{idx_name}')
         except QueryException as e:
             if e.code == 'query::relation_not_found':
                 self.run(f'''::hnsw create {rel_name}:{idx_name} {{
+                    dim: $dim,
+                    m: $m,
+                    dtype: F32,
+                    fields: vec,
+                    distance: Cosine,
+                    ef: $ef,
+                }}''', {'dim': dim, 'm': m, 'ef': ef})
+            else:
+                raise
+
+    async def a_ensure_vec_index(self, rel_name: str, idx_name: str, dim: int, m: int, ef: int):
+        try:
+            await self.a_run(f'::columns {rel_name}:{idx_name}')
+        except QueryException as e:
+            if e.code == 'query::relation_not_found':
+                await self.a_run(f'''::hnsw create {rel_name}:{idx_name} {{
                     dim: $dim,
                     m: $m,
                     dtype: F32,
@@ -468,8 +550,16 @@ class CozoClient:
             self.embedded.close()
 
     def _client_request(self, script, params=None, immutable=False):
-
         r = self._session.post(f'{self.host}/text-query', json={
+            'script': script,
+            'params': params or {},
+            'immutable': immutable
+        })
+        res = r.json()
+        return self._format_return(res)
+
+    async def _async_client_request(self, script, params=None, immutable=False):
+        r = await self._asession.post(f'{self.host}/text-query', json={
             'script': script,
             'params': params or {},
             'immutable': immutable
@@ -507,6 +597,20 @@ class CozoClient:
         else:
             return self._embedded_request(script, params, immutable)
 
+    async def a_run(self,
+                    script: str | InputProgram,
+                    params: dict[str, Any] | None = None,
+                    replace: dict[str, str] | None = None,
+                    immutable=False
+                    ) -> CozoResponse:
+        assert self.is_remote
+        script = str(script)
+        if replace:
+            for k, v in replace.items():
+                r = r'<<' + k + r'>>'
+                script = re.sub(r, v, script)
+        return await self._async_client_request(script, params, immutable)
+
     def export_relations(self, relations) -> dict[str, CozoResponse]:
         if not self.is_remote:
             return {k: CozoResponse(**v) for k, v in self.embedded.export_relations(relations).items()}
@@ -516,7 +620,7 @@ class CozoClient:
             rels = ','.join(map(lambda s: urllib.parse.quote_plus(s), relations))
             url = f'{self.host}/export/{rels}'
 
-            r = requests.get(url)
+            r = self._session.get(url)
             res = r.json()
             if res['ok']:
                 return {k: CozoResponse(**v) for k, v in res['data'].items()}
@@ -527,10 +631,9 @@ class CozoClient:
         if self.embedded:
             self.embedded.import_relations(data)
         else:
-            import requests
             url = f'{self.host}/import'
 
-            r = requests.put(url, json=data)
+            r = self._session.put(url, json=data)
             res = r.json()
             if not res['ok']:
                 raise RuntimeError(res['message'])
@@ -586,20 +689,43 @@ class CozoClient:
             q += ' :returning'
         return self.run(q, {'data': processed_data})
 
+    async def _a_mutate(self, relation, data, op, returning):
+        cols, processed_data = self._process_mutate_data(data)
+        cols_str = ', '.join(cols)
+        q = f'?[{cols_str}] <- $data :{op} {relation} {{ {cols_str} }}'
+        if returning:
+            q += ' :returning'
+        return await self.a_run(q, {'data': processed_data})
+
     def insert(self, relation: str, data: dict[str, Any] | list[dict[str, Any]], returning: bool = False):
         return self._mutate(relation, data, 'insert', returning)
+
+    async def a_insert(self, relation: str, data: dict[str, Any] | list[dict[str, Any]], returning: bool = False):
+        return await self._a_mutate(relation, data, 'insert', returning)
 
     def put(self, relation: str, data: dict[str, Any] | list[dict[str, Any]], returning: bool = False):
         return self._mutate(relation, data, 'put', returning)
 
+    async def a_put(self, relation: str, data: dict[str, Any] | list[dict[str, Any]], returning: bool = False):
+        return await self._a_mutate(relation, data, 'put', returning)
+
     def update(self, relation: str, data: dict[str, Any] | list[dict[str, Any]], returning: bool = False):
         return self._mutate(relation, data, 'update', returning)
+
+    async def a_update(self, relation: str, data: dict[str, Any] | list[dict[str, Any]], returning: bool = False):
+        return await self._a_mutate(relation, data, 'update', returning)
 
     def rm(self, relation: str, data: dict[str, Any] | list[dict[str, Any]], returning: bool = False):
         return self._mutate(relation, data, 'rm', returning)
 
+    async def a_rm(self, relation: str, data: dict[str, Any] | list[dict[str, Any]], returning: bool = False):
+        return await self._a_mutate(relation, data, 'rm', returning)
+
     def delete(self, relation: str, data: dict[str, Any] | list[dict[str, Any]], returning: bool = False):
         return self._mutate(relation, data, 'delete', returning)
+
+    async def a_delete(self, relation: str, data: dict[str, Any] | list[dict[str, Any]], returning: bool = False):
+        return await self._a_mutate(relation, data, 'delete', returning)
 
     def get(self, relation: str, data: dict[str, Any] | list[dict[str, Any]], out: list[str] | None = None):
         if out is None:
@@ -615,6 +741,21 @@ class CozoClient:
             ],
         )
         return self.run(prog, {'data': processed_data})
+
+    async def a_get(self, relation: str, data: dict[str, Any] | list[dict[str, Any]], out: list[str] | None = None):
+        if out is None:
+            out = [row['column'] for row in await self.a_run(f'::columns {relation}')]
+
+        cols, processed_data = self._process_mutate_data(data)
+        prog = InputProgram(
+            rules=[
+                ConstantRule(head=RuleHead(name='data', args=cols), body=Param(name='data')),
+                InlineRule(head=RuleHead(name='?', args=out),
+                           atoms=[RuleApply(name='data', args=cols),
+                                  StoredRuleNamedApply(name=relation, args={k: k for k in out})]),
+            ],
+        )
+        return await self.a_run(prog, {'data': processed_data})
 
 
 class QueryException(Exception):

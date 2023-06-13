@@ -17,7 +17,7 @@ classifiers = [
 ]
 dependencies = [
     "cozo-embedded",
-    "requests",
+    "httpx",
     "pydantic",
     "openpyxl"
 ]
