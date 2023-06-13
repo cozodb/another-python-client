@@ -500,7 +500,7 @@ class CozoClient:
         script = str(script)
         if replace:
             for k, v in replace.items():
-                r = r'\$\$' + k + r'\$\$'
+                r = r'<<' + k + r'>>'
                 script = re.sub(r, v, script)
         if self.is_remote:
             return self._client_request(script, params, immutable)
