@@ -394,8 +394,9 @@ class CozoClient:
                 assert get_type(col) == existing_cols[i]['type']
             col_map = {row['column']: row for row in existing_cols if not row['is_key']}
             for col in vals:
-                assert get_ident(col) in col_map
-                assert get_type(col) == col_map[get_ident(col)]['type']
+                assert get_ident(col) in col_map, f'Column {col} not found'
+                assert get_type(col).replace(' ', '') == col_map[get_ident(col)]['type'].replace(' ', ''), \
+                    f'Column {col} has type {col_map[get_ident(col)]["type"]} not {get_type(col)}'
         except QueryException as e:
             if e.code == 'query::relation_not_found':
                 prog = InputProgram(
