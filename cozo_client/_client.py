@@ -37,6 +37,18 @@ class CozoResponse(BaseModel):
     headers: list[str]
     rows: list[list[Any]]
     max_display_rows: int = 50
+    next: Any
+
+    def multi(self) -> list:
+        cur = self.next
+        self.next = None
+        resp = [self]
+        while cur:
+            nxt = CozoResponse(**cur)
+            cur = cur.get('next')
+            nxt.next = None
+            resp.append(nxt)
+        return resp
 
     def _repr_html_(self):
         html_str = ["<table>", "<thead>", "<tr>", "<th></th>"]
