@@ -374,8 +374,8 @@ class CozoClient:
             self.embedded = None
             self._remote_sse = {}
             self._remote_cb_id = 0
-            self._session = httpx.Client()
-            self._asession = httpx.AsyncClient()
+            self._session = httpx.Client(timeout=600)
+            self._asession = httpx.AsyncClient(timeout=600)
             if remote_token:
                 self._session.headers.update({'Authorization': f'Bearer {remote_token}'})
                 self._asession.headers.update({'Authorization': f'Bearer {remote_token}'})
