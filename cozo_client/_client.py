@@ -360,7 +360,8 @@ class CozoClient:
                  engine: StorageEngine = StorageEngine.mem,
                  remote_host: str = 'http://127.0.0.1:9070/',
                  remote_token: str | None = None,
-                 remote_auth: str | None = None):
+                 remote_auth: str | None = None,
+                 timeout=600):
 
         if engine == StorageEngine.mem and path is not None:
             engine = StorageEngine.sqlite
@@ -374,8 +375,8 @@ class CozoClient:
             self.embedded = None
             self._remote_sse = {}
             self._remote_cb_id = 0
-            self._session = httpx.Client(timeout=600)
-            self._asession = httpx.AsyncClient(timeout=600)
+            self._session = httpx.Client(timeout=timeout)
+            self._asession = httpx.AsyncClient(timeout=timeout)
             if remote_token:
                 self._session.headers.update({'Authorization': f'Bearer {remote_token}'})
                 self._asession.headers.update({'Authorization': f'Bearer {remote_token}'})
